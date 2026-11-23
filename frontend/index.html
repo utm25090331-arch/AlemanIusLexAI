@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AlemanIusLexAI — Integridad Documental en Solana</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      margin: 0;
+      padding: 2rem;
+    }
+    .container {
+      max-width: 780px;
+      margin: 0 auto;
+      display: grid;
+      gap: 1.25rem;
+    }
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 1.25rem;
+    }
+    h1, h2 { margin-top: 0; }
+    label { display: block; font-size: 0.9rem; margin-bottom: 0.35rem; color: #cbd5e1; }
+    input, textarea, button {
+      width: 100%;
+      box-sizing: border-box;
+      border-radius: 8px;
+      border: 1px solid #475569;
+      padding: 0.65rem 0.8rem;
+      font-size: 0.95rem;
+      margin-bottom: 0.85rem;
+    }
+    input, textarea { background: #0f172a; color: #f8fafc; }
+    button {
+      background: #6366f1;
+      color: white;
+      border: none;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: #4f46e5; }
+    pre {
+      background: #020617;
+      padding: 0.9rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      color: #93c5fd;
+    }
+    .badge {
+      display: inline-block;
+      background: #14532d;
+      color: #86efac;
+      padding: 0.25rem 0.6rem;
+      border-radius: 999px;
+      font-size: 0.8rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <span class="badge">Solana Devnet</span>
+      <h1>AlemanIusLexAI</h1>
+      <p>Programa: <code>Chw3CkaxkRafhHTeJ85DQQJm4frpFwdhqCVtbkdZGtpF</code></p>
+      <button id="connectBtn">Conectar Phantom Wallet</button>
+      <div id="walletStatus">Wallet no conectada</div>
+    </div>
+
+    <div class="card">
+      <h2>1. Expediente y Documento (PDAs + SHA-256)</h2>
+      <label for="caseId">ID del Expediente (case_id, máx. 32 chars)</label>
+      <input id="caseId" type="text" value="caso-001" maxlength="32" />
+
+      <label for="docId">ID del Documento (document_id, máx. 32 chars)</label>
+      <input id="docId" type="text" value="doc-001" maxlength="32" />
+
+      <label for="fileInput">Subir archivo para calcular SHA-256 (opcional)</label>
+      <input id="fileInput" type="file" />
+
+      <label for="textInput">O ingresar texto / contenido para calcular SHA-256</label>
+      <textarea id="textInput" rows="3" placeholder="Escribe el contenido o hash hex de 64 caracteres..."></textarea>
+
+      <button id="deriveBtn">Calcular SHA-256 y Derivar PDAs</button>
+      <pre id="output">Conecta tu wallet y presiona "Calcular SHA-256 y Derivar PDAs".</pre>
+    </div>
+  </div>
+
+  <script type="module">
+    import { PublicKey, Connection, clusterApiUrl } from "https://esm.sh/@solana/web3.js@1.95.3";
+
+    const PROGRAM_ID = new PublicKey("Chw3CkaxkRafhHTeJ85DQQJm4frpFwdhqCVtbkdZGtpF");
+    const connection = new Connection(clusterApiUrl("devnet"), "confirmed");
+
+    let connectedPubkey = null;
+    const outputEl = document.getElementById("output");
+    const walletStatusEl = document.getElementById("walletStatus");
+
+    async function sha256Bytes(uint8Array) {
+      const hashBuffer = await crypto.subtle.digest("SHA-256", uint8Array);
+      return new Uint8Array(hashBuffer);
+    }
+
+    document.getElementById("connectBtn").addEventListener("click", async () => {
+      const provider = window.solana;
+      if (!provider || !provider.isPhantom) {
+        alert("Instala o abre Phantom Wallet en tu navegador.");
+        return;
+      }
+      const resp = await provider.connect();
+      connectedPubkey = new PublicKey(resp.publicKey.toString());
+      const balanceLamports = await connection.getBalance(connectedPubkey);
+      walletStatusEl.innerHTML = `Conectado: <code>${connectedPubkey.toBase58()}</code> (${(balanceLamports / 1e9).toFixed(4)} SOL)`;
+    });
+
+    document.getElementById("fileInput").addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const buf = new Uint8Array(await file.arrayBuffer());
+      const digest = await sha256Bytes(buf);
+      document.getElementById("textInput").value = Array.from(digest)
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+    });
+
+    document.getElementById("deriveBtn").addEventListener("click", async () => {
+      if (!connectedPubkey) {
+        alert("Primero conecta tu wallet de Phantom.");
+        return;
+      }
+
+      const caseId = document.getElementById("caseId").value.trim();
+      const docId = document.getElementById("docId").value.trim();
+      const rawText = document.getElementById("textInput").value.trim();
+
+      if (!caseId || !docId) {
+        alert("Ingresa case_id y document_id.");
+        return;
+      }
+
+      const [caseRecord] = PublicKey.findProgramAddressSync(
+        [Buffer.from("case"), connectedPubkey.toBuffer(), Buffer.from(caseId)],
+        PROGRAM_ID
+      );
+
+      const [documentRecord] = PublicKey.findProgramAddressSync(
+        [Buffer.from("document"), caseRecord.toBuffer(), Buffer.from(docId)],
+        PROGRAM_ID
+      );
+
+      let hashBytes;
+      if (/^[0-9a-fA-F]{64}$/.test(rawText)) {
+        hashBytes = Uint8Array.from(rawText.match(/.{1,2}/g).map((byte) => parseInt(byte, 16)));
+      } else {
+        const encoder = new TextEncoder();
+        hashBytes = await sha256Bytes(encoder.encode(rawText || `${caseId}:${docId}`));
+      }
+
+      const hexHash = Array.from(hashBytes)
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+
+      outputEl.textContent = JSON.stringify(
+        {
+          network: "devnet",
+          programId: PROGRAM_ID.toBase58(),
+          authority: connectedPubkey.toBase58(),
+          caseId,
+          caseRecordPDA: caseRecord.toBase58(),
+          docId,
+          documentRecordPDA: documentRecord.toBase58(),
+          sha256Hex: hexHash,
+          sha256ArrayU8: Array.from(hashBytes),
+        },
+        null,
+        2
+      );
+    });
+  </script>
+</body>
+</html>
